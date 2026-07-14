@@ -34,47 +34,7 @@ ClickHouse là một trong những CSDL OLAP phổ biến nhất, được sử 
 
 **Đặc điểm**
 
-- Kiến trúc lưu trữ dạng cột: Một CSDL OLTP như MySQL sẽ lưu dữ liệu thành hàng kiểu như sau
-
-```
-Row1
-1 frontend 200 10
-
-Row2
-2 backend 500 25
-
-Row3
-3 frontend 200 15
-```
-
-Nếu muốn query kiểu SELECT avg(duration) thì MySQL sẽ phải đọc toàn bộ hàng. Còn Clickhouse sẽ lưu theo cột kiểu:
-
-```
-id
--------
-1
-2
-3
-
-service
--------
-frontend
-backend
-
-duration
--------
-20
-35
-12
-
-status
--------
-200
-500
-200
-```
-
-Khi cần tính avg(duration) thì ClickHouse chỉ cần đọc cột duration chứ ko cần đọc các cột khác, thời gian query sẽ nhanh hơn rất nhiều. Kiến trúc dạng cột cho phép khi query, ClickHouse phải lọc qua ít dữ liệu hơn; compress dữ liệu tốt hơn.
+Mấu chốt để hiểu được ClickHouse chính là tìm hiểu về engine quản lý bảng của nó là MergeTree engine.
 
 **MergeTree engine**
 
@@ -94,19 +54,76 @@ Sau đó, engine gộp các part nhỏ thành part lớn hơn. Giúp ghi dữ li
 
 - Lưu trữ theo cột: engine lưu từng cột của bảng thành file riêng biệt. VD: bảng có 4 cột Timestamp, Service, Status, Duration thì sẽ được lưu thành 4 file Timestamp.bin, Service.bin, Status.bin, Duration.bin. Nếu truy vấn SELECT avg(Duration) FROM logs; thì ClickHouse chỉ cần đọc Duration.bin thay vì toàn bộ dữ liệu như lưu trữ dạng hàng.
 
-- MergeTree ko tạo index cho từng dòng, primary index chỉ lưu giá trị đầu tiên của mỗi granule, một granule là mặc định 8192 dòng => index rất nhỏ, tiết kiệm RAM, tìm dữ liệu nhanh nhưng ko chính xác bằng các CSDL thông thường.
+- MergeTree ko tạo index cho từng dòng, primary index chỉ lưu giá trị đầu tiên của mỗi granule, một granule là mặc định 8192 dòng => index rất nhỏ, tiết kiệm RAM, tìm dữ liệu nhanh nhưng ko chính xác bằng các CSDL OLTP.
 
-- Khóa chính không tham chiếu đến từng hàng riêng lẻ mà tham chiếu đến các khối gồm 8192 hàng được gọi là granule, giúp cho khóa chính của các tập dữ liệu khổng lồ đủ nhỏ để vẫn được lưu trữ trong bộ nhớ, đồng thời vẫn cung cấp khả năng truy cập nhanh vào dữ liệu trên đĩa. Khóa chính của bảng cũng xác định thứ tự sắp xếp trong từng phần của bảng (clustered index). 
+- ORDER BY quyết định cách sắp xếp dữ liệu. VD:
 
-- TTL (Time to live): dữ liệu sẽ bị xóa sau khi thời gian TTL của nó hết. Thời gian này có thể thay đổi được.
+```
+ORDER BY
+(
+    timestamp,
+    service_name
+)
+```
 
-**Những tính năng quan trọng**
+thì mỗi part sẽ được sắp xếp kiểu như sau:
 
-- Mã nguồn mở.
+```
+2026-07-01 frontend
+2026-07-01 frontend
+2026-07-01 backend
+2026-07-02 frontend
+```
 
-- Hiệu suất cao, có thể thực hiện query phức tạp trên khối dữ liệu lớn trong thời gian ngắn.
+để khi cần query 1 timestamp hay service_name cụ thể, query sẽ được xử lý rất nhanh.
 
-- Xử lý dữ liệu cột, cho phép lọc và truy vấn dữ liệu hiệu quả hơn so với phương pháp lưu trữ theo hàng. Khi cần truy vấn một vài cột dữ liệu, ClickHouse chỉ cần đọc dữ liệu từ những cột đó thay vì quét toàn bộ bảng.
+- MergeTree hỗ trợ chia dữ liệu thành nhiều partition. VD: PARTITION BY toYYYYMM(timestamp). Khi truy vấn WHERE timestamp >= '2026-07-01' thì ClickHouse sẽ bỏ qua toàn bộ partition của tháng 6 và 8.
+
+- Hỗ trợ TTL (Time to live), background process sẽ tự động xóa dữ liệu hết TTL. Thời gian này có thể thay đổi được.
+
+- Update và delete bất đồng bộ. Khi thực hiện sửa hay xóa dữ liệu, engine sẽ tạo mutation, đợi background process merge, sinh part mới và xóa part cũ. Cách làm này ko khóa bảng và ko ảnh hưởng đến việc ghi dữ liệu nhưng dữ liệu bị xóa sẽ ko biến mất ngay lập tức.
+
+**Vì sao ClickHouse rất nhanh**
+
+Do kết hợp các cơ chế như:
+
+- Chỉ đọc các cột cần thiết.
+
+- Compression, ít dữ liệu phải đọc từ disk.
+
+- Vectorized execution: xử lý rất nhiều dữ liệu mỗi lần thay vì từng dòng.
+
+- Index nhỏ, tìm vùng dữ liệu nhanh.
+
+- Đọc nhiều part và cột song song.
+
+- Background merge, giảm số lượng part, tối ưu việc đọc.
+
+- Bỏ qua các partition không liên quan.
+
+VD có truy vấn như sau:
+
+```
+SELECT avg(duration)
+FROM logs
+WHERE Timestamp >= '2026-07-01'
+  AND Timestamp < '2026-07-02'
+  AND Service = 'frontend';
+```
+
+Các bước nội bộ:
+
+1. Partition pruning: chỉ đọc partition có ngày tháng chứa "2026-07-01"
+
+2. Primary index: dùng "Timestamp" để xác định các granule cần đọc.
+
+3. Skip index: bỏ qua các granule ko chứa "frontend"
+
+4. Column pruning: chỉ mở các cột Timestamp, Service và duration.
+
+5. Vectorized excecution: tính avg(duration) trên từng khối dữ liệu lớn thay vì từng bản ghi.
+
+6. Parallel processing: nếu có nhiều part, nhiều luồng sẽ đọc và xử lý đồng thời rồi gộp kết quả.
 
 **Khi nào nên sử dụng ClickHouse**
 
