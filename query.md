@@ -1,4 +1,4 @@
-ClickHouse sử dụng ngôn ngữ SQL làm ngôn ngữ query nhưng có phần mở rộng riêng. Sau đây là một số lệnh quan trọng cần nhớ. Để tìm hiểu thêm: https://clickhouse.com/docs/sql-reference
+ClickHouse sử dụng ngôn ngữ SQL làm ngôn ngữ query nhưng có phần mở rộng riêng. Sau đây là một số lệnh quan trọng cần nhớ để sử dụng ClickHouse cho SigNoz. Để tìm hiểu thêm: https://clickhouse.com/docs/sql-reference
 
 **Query cơ bản**
 
@@ -304,3 +304,17 @@ FROM traces;
 ```
 
 sẽ lấy thuộc tính service.name trong cột ResourceAttribute. Đây là kiểu dữ liệu được sử dụng phổ biến trogn SigNoz để lưu các thuộc tính của OpenTelemetry.
+
+**Những đặc điểm cú pháp đáng chú ý**
+
+So với các hệ quản trị cơ sở dữ liệu OLTP như MySQL, ClickHouse có một số khác biệt đáng chú ý:
+
+- UPDATE và DELETE được thực hiện thông qua ALTER TABLE ... UPDATE/DELETE (mutation), không cập nhật tức thời từng dòng.
+
+- ORDER BY trong câu lệnh CREATE TABLE là khóa sắp xếp vật lý của dữ liệu, ảnh hưởng trực tiếp đến hiệu năng truy vấn, không chỉ dùng để sắp xếp kết quả như trong SELECT.
+
+- Các hàm aggregate như count(), sum(), avg() được tối ưu rất mạnh cho dữ liệu lớn và thường xử lý hàng tỷ bản ghi với hiệu năng cao.
+
+- ClickHouse có nhiều kiểu dữ liệu đặc thù như Array, Map, Tuple, Nested, LowCardinality, rất phù hợp với dữ liệu log, trace và metric.
+
+- Trong các hệ thống observability như SigNoz, thường xuyên làm việc với các bảng dùng MergeTree engine và truy vấn các trường Map chứa OpenTelemetry resource hoặc attributes thay vì các cột cố định.
